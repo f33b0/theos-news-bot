@@ -1,0 +1,120 @@
+from flask import Flask, request
+from twilio.twiml.messaging_response import MessagingResponse
+import requests
+import feedparser
+from bs4 import BeautifulSoup
+import schedule
+import time
+import threading
+
+app = Flask(__name__)
+
+# ✅ Free News Sources (No API Key Required)
+FREE_NEWS_SOURCES = [
+    "https://feeds.skynews.com/feeds/rss/world.xml",  # ✅ Sky News RSS Feed
+    "https://www.reutersagency.com/feed/?best-topics=politics",  # ✅ Reuters Politics
+    "https://www.aljazeera.com/xml/rss/all.xml"  # ✅ Al Jazeera News
+]
+
+# ✅ UK Property Market & Legislation News
+UK_PROPERTY_NEWS_SOURCES = [
+    "https://www.propertywire.com/feed/",  # ✅ Property Wire UK
+    "https://www.estateagenttoday.co.uk/rss",  # ✅ Estate Agent Today
+    "https://www.gov.uk/government/organisations/ministry-of-housing-communities-and-local-government.atom"  # ✅ UK Gov Housing & Legislation
+]
+
+# ✅ Technology & Biotech News Sources
+TECH_BIOTECH_NEWS_SOURCES = [
+    "https://www.sciencedaily.com/rss/all.xml",  # ✅ Science Daily RSS
+    "https://techcrunch.com/feed/",  # ✅ TechCrunch RSS
+    "https://www.fiercebiotech.com/rss.xml"  # ✅ Fierce Biotech RSS
+]
+
+# ✅ Oil & Gas News Sources
+OIL_GAS_NEWS_SOURCES = [
+    "https://www.oilandgas360.com/feed/",  # ✅ Oil & Gas 360
+    "https://www.offshore-mag.com/rss",  # ✅ Offshore Magazine
+    "https://www.energyvoice.com/feed"  # ✅ Energy Voice
+]
+
+# 📌 Function to Fetch and Summarize News
+def get_summarized_news(feed_urls):
+    news = []
+    for url in feed_urls:
+        feed = feedparser.parse(url)
+        for entry in feed.entries[:3]:  # Get top 3 news items per source
+            summary = entry.summary[:300] + "..." if len(entry.summary) > 300 else entry.summary  # Shorten summary
+            news.append(f"🔹 {entry.title}\n{summary}\nSend '{len(news)}' to read full article.")
+    return "\n\n".join(news) if news else "⚠ No news available."
+
+# 📌 Function to Fetch General UK News
+def get_general_uk_news():
+    return get_summarized_news(["https://feeds.skynews.com/feeds/rss/uk.xml"])
+
+# 📌 Function to Fetch Full Article Content
+def get_full_article(article_id):
+    """Fetches full article text based on article ID."""
+    try:
+        article_id = int(article_id)
+    except ValueError:
+        return "❌ Invalid article ID. Please send a number corresponding to a news item."
+    
+    articles = []
+    for url in FREE_NEWS_SOURCES:
+        feed = feedparser.parse(url)
+        articles.extend(feed.entries)
+    
+    if 1 <= article_id <= len(articles):
+        article_url = articles[article_id - 1].link  # Get the article URL
+        response = requests.get(article_url, headers={"User-Agent": "Mozilla/5.0"})
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, "html.parser")
+            paragraphs = soup.find_all("p")
+            full_text = "\n".join([p.get_text() for p in paragraphs[:5]])  # First 5 paragraphs
+            return f"📰 Full Article:\n{full_text}\n\n🔗 Read more: {article_url}"
+        else:
+            return f"❌ Could not fetch article. Visit the original link: {article_url}"
+    else:
+        return "❌ Article ID out of range. Please send a valid number."
+
+# 📌 WhatsApp Webhook
+@app.route("/webhook", methods=["POST"])
+def whatsapp_news_bot():
+    incoming_msg = request.values.get("Body", "").lower()
+    response = MessagingResponse()
+    message = response.message()
+
+    if incoming_msg == "breaking":
+        message.body(get_summarized_news(FREE_NEWS_SOURCES))
+    elif incoming_msg == "uk property":
+        message.body(get_summarized_news(UK_PROPERTY_NEWS_SOURCES))
+    elif incoming_msg == "tech":
+        message.body(get_summarized_news(TECH_BIOTECH_NEWS_SOURCES))
+    elif incoming_msg == "oil gas":
+        message.body(get_summarized_news(OIL_GAS_NEWS_SOURCES))
+    elif incoming_msg == "ukraine":
+        message.body(get_summarized_news(["https://liveuamap.com/rss"]))
+    elif incoming_msg == "osint":
+        message.body(get_summarized_news(["https://nitter.net/search?q=OSINT"]))
+    elif incoming_msg == "uk news":
+        message.body(get_general_uk_news())
+    elif incoming_msg.isdigit():
+        message.body(get_full_article(incoming_msg))  # Fetch the full article
+    else:
+        message.body(
+            "📢 Welcome to Theo's News Bot!\n"
+            "Send a keyword to get updates:\n"
+            "🔹 'breaking' - Breaking News\n"
+            "🔹 'uk news' - General UK News\n"
+            "🔹 'uk property' - UK Property Market & Legislation\n"
+            "🔹 'tech' - Technology & Biotech Innovations\n"
+            "🔹 'oil gas' - Oil & Gas Industry Updates\n"
+            "🔹 'ukraine' - Ukraine War Updates\n"
+            "🔹 'osint' - OSINT Analyst Reports\n"
+            "🔹 'podcasts' - Latest Podcast Episodes\n"
+            "\nType a category to get the latest updates!"
+        )
+    return str(response)
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=True)
